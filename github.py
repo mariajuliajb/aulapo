@@ -13,7 +13,7 @@ while (len(mensagem) < 5 ):
     mensagem = input("Mensagem no commit: ")
 
 print ("✅Registrando alterações..")
-comando2 = "git commit -m '" + mensagem + "'"
+comando2 = f"git commit -m \"{mensagem}\""
 os.system(comando2)
 
 print ("🛜Enviando projeto pro github..")
