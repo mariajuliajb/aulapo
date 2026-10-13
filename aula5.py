@@ -21,7 +21,7 @@ FORCA_PULO = 650
 VELOCIDADE_JOGADOR = 360
 TEXTURAS_JOGADOR = None
 
-banco = SqliteDatabase("ranking.db")
+banco = SqliteDatabase("Pontuacao.db")
 
 
 class BaseModel(Model):
@@ -30,9 +30,21 @@ class BaseModel(Model):
         database = banco
 
 
-class Ranking(BaseModel):
+class Pontuacao(BaseModel):
     nome = CharField()
     pontuacao = IntegerField()
+    tempo_finalizacao = IntegerField(default=0)
+
+
+def garantir_coluna_tempo_finalizacao():
+
+    tabela = Pontuacao._meta.table_name
+    colunas = banco.execute_sql(f"PRAGMA table_info({tabela})").fetchall()
+
+    if not any(coluna[1] == "tempo_finalizacao" for coluna in colunas):
+        banco.execute_sql(
+            f"ALTER TABLE {tabela} ADD COLUMN tempo_finalizacao INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def carregar_texturas_jogador():
@@ -412,7 +424,7 @@ class JanelaJogo(arcade.Window):
             else:
                 arcade.draw_text(f"Jogador: {self.nome_jogador or 'Jogador'}", 275, 365, arcade.color.WHITE, 20)
                 arcade.draw_text("N: digitar nome     J: jogar", 250, 300, arcade.color.YELLOW, 20)
-                arcade.draw_text("R: ranking     I: instruções", 250, 250, arcade.color.WHITE, 18)
+                arcade.draw_text("R: Pontuacao     I: instruções", 250, 250, arcade.color.WHITE, 18)
                 arcade.draw_text("S: sobre a história", 250, 210, arcade.color.WHITE, 18)
             return
 
@@ -422,7 +434,7 @@ class JanelaJogo(arcade.Window):
             arcade.draw_text("Seta para cima: pular e quicar nos blocos", 160, 365, arcade.color.WHITE, 20)
             arcade.draw_text("Cada castelo vale 1 ponto; a moeda roxa vale 5.", 160, 315, arcade.color.WHITE, 18)
             arcade.draw_text("Tocar no inimigo tira 1 ponto e teleporta você.", 160, 275, arcade.color.WHITE, 18)
-            arcade.draw_text("N: nome   J: jogar   R: ranking   S: sobre", 160, 210, arcade.color.WHITE, 18)
+            arcade.draw_text("N: nome   J: jogar   R: Pontuacao   S: sobre", 160, 210, arcade.color.WHITE, 18)
             arcade.draw_text("M ou ESC: voltar ao menu", 160, 165, arcade.color.WHITE, 18)
             return
 
@@ -436,17 +448,20 @@ class JanelaJogo(arcade.Window):
             arcade.draw_text("M ou ESC: voltar ao menu", 260, 150, arcade.color.WHITE, 18)
             return
 
-        if self.estado == "ranking":
-            arcade.draw_text("RANKING", 320, 520, arcade.color.YELLOW, 32)
+        if self.estado == "Pontuacao":
+            arcade.draw_text("Pontuacao", 320, 520, arcade.color.YELLOW, 32)
             resultados = list(
-                Ranking.select().order_by(Ranking.pontuacao.desc()).limit(10)
+                Pontuacao.select().order_by(
+                    Pontuacao.pontuacao.desc(),
+                    Pontuacao.tempo_finalizacao.asc()
+                ).limit(10)
             )
             if not resultados:
                 arcade.draw_text("Ainda não há pontuações.", 250, 430, arcade.color.WHITE, 20)
             for posicao, resultado in enumerate(resultados, start=1):
                 arcade.draw_text(
-                    f"{posicao}. {resultado.nome} - {resultado.pontuacao} pontos",
-                    220,
+                    f"{posicao}. {resultado.nome} - {resultado.pontuacao} pontos | tempo {resultado.tempo_finalizacao}s",
+                    140,
                     465 - posicao * 35,
                     arcade.color.WHITE,
                     18
@@ -506,7 +521,12 @@ class JanelaJogo(arcade.Window):
 
         self.venceu = venceu
         self.estado = "game_over"
-        Ranking.create(nome=self.nome_jogador, pontuacao=self.pontuacao)
+        tempo_gasto = TEMPO_LIMITE - max(0, int(self.tempo))
+        Pontuacao.create(
+            nome=self.nome_jogador,
+            pontuacao=self.pontuacao,
+            tempo_finalizacao=tempo_gasto
+        )
 
     def teleportar_inimigo(self, inimigo):
 
@@ -679,7 +699,7 @@ class JanelaJogo(arcade.Window):
                     self.nome_jogador = "Jogador"
                 self.iniciar_jogo()
             elif symbol == arcade.key.R:
-                self.estado = "ranking"
+                self.estado = "Pontuacao"
             elif symbol == arcade.key.I:
                 self.estado = "instrucoes"
             elif symbol == arcade.key.S:
@@ -691,7 +711,7 @@ class JanelaJogo(arcade.Window):
                 self.estado = "menu"
             return
 
-        if self.estado == "ranking":
+        if self.estado == "Pontuacao":
             if symbol in (arcade.key.M, arcade.key.ESCAPE):
                 self.estado = "menu"
             return
@@ -702,6 +722,10 @@ class JanelaJogo(arcade.Window):
             elif symbol in (arcade.key.M, arcade.key.ESCAPE):
                 self.nome_digitado = self.nome_jogador
                 self.estado = "menu"
+            return
+
+        if self.estado == "jogando" and symbol == arcade.key.ESCAPE:
+            self.estado = "menu"
             return
 
         if symbol == arcade.key.RIGHT:
@@ -752,7 +776,8 @@ class JanelaJogo(arcade.Window):
 def main():
 
     banco.connect(reuse_if_open=True)
-    banco.create_tables([Ranking])
+    banco.create_tables([Pontuacao], safe=True)
+    garantir_coluna_tempo_finalizacao()
 
     JanelaJogo()
 
