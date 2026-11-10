@@ -1,0 +1,3 @@
+arcade>=3.3,<4
+Pillow>=10.0
+peewee>=3.17

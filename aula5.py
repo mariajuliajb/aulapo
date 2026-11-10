@@ -1,7 +1,7 @@
 import arcade
 import random
 from PIL import Image
-from peewee import Model, CharField, IntegerField, SqliteDatabase
+from aula4 import Pontuacao, inicializar_banco
 
 
 # ==========================
@@ -10,41 +10,18 @@ from peewee import Model, CharField, IntegerField, SqliteDatabase
 
 LARGURA = 800
 ALTURA = 600
+ALTURA_PISO = 30
 
 TOTAL_CASTELOS = 20
 TOTAL_INIMIGOS = 2
 TOTAL_MOEDAS = 1
 
 TEMPO_LIMITE = 60
-GRAVIDADE = 1000
-FORCA_PULO = 650
-VELOCIDADE_JOGADOR = 360
+GRAVIDADE = 0.55
+FORCA_PULO = 14.5
+VELOCIDADE_JOGADOR = 5
 TEXTURAS_JOGADOR = None
-
-banco = SqliteDatabase("Pontuacao.db")
-
-
-class BaseModel(Model):
-
-    class Meta:
-        database = banco
-
-
-class Pontuacao(BaseModel):
-    nome = CharField()
-    pontuacao = IntegerField()
-    tempo_finalizacao = IntegerField(default=0)
-
-
-def garantir_coluna_tempo_finalizacao():
-
-    tabela = Pontuacao._meta.table_name
-    colunas = banco.execute_sql(f"PRAGMA table_info({tabela})").fetchall()
-
-    if not any(coluna[1] == "tempo_finalizacao" for coluna in colunas):
-        banco.execute_sql(
-            f"ALTER TABLE {tabela} ADD COLUMN tempo_finalizacao INTEGER NOT NULL DEFAULT 0"
-        )
+TEXTURAS_INIMIGO = None
 
 
 def carregar_texturas_jogador():
@@ -55,27 +32,33 @@ def carregar_texturas_jogador():
         folha = arcade.load_spritesheet("player.png")
         largura_folha, altura_folha = folha.image.size
         largura_quadro = largura_folha // 6
-        imagens = folha.get_image_grid(
+        quadros = folha.get_texture_grid(
             size=(largura_quadro, altura_folha),
             columns=6,
             count=6
         )
-        quadros = [
-            imagem.resize((200, 200), Image.Resampling.LANCZOS)
-            for imagem in imagens
-        ]
-        TEXTURAS_JOGADOR = [
-            arcade.Texture(imagem, hash=f"jogador_{indice}")
-            for indice, imagem in enumerate(quadros)
-        ] + [
+        TEXTURAS_JOGADOR = quadros + [
             arcade.Texture(
-                imagem.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+                textura.image.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
                 hash=f"jogador_esquerda_{indice}"
-            )
-            for indice, imagem in enumerate(quadros)
+            ) for indice, textura in enumerate(quadros)
         ]
 
     return TEXTURAS_JOGADOR
+
+
+def carregar_texturas_inimigo():
+    global TEXTURAS_INIMIGO
+
+    if TEXTURAS_INIMIGO is None:
+        textura_direita = arcade.load_texture("inimigo_png.png")
+        textura_esquerda = arcade.Texture(
+            textura_direita.image.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+            hash="inimigo_esquerda"
+        )
+        TEXTURAS_INIMIGO = [textura_direita, textura_esquerda]
+
+    return TEXTURAS_INIMIGO
 
 
 # ==========================
@@ -88,68 +71,54 @@ class Player(arcade.Sprite):
 
         super().__init__(
             carregar_texturas_jogador()[0],
-            scale=0.40
+            scale=0.20
         )
 
         self.textures = carregar_texturas_jogador()
         self.set_texture(0)
-        self.pode_pular = True
-        self.virado_esquerda = False
+        self.virado_para = "direita"
         self.tempo_animacao = 0
         self.tempo_dano = 0
 
     def update(self, delta_time):
-
-        self.pode_pular = False
         self.tempo_animacao += delta_time
         self.tempo_dano = max(0, self.tempo_dano - delta_time)
-
-        self.center_x += self.change_x * delta_time
-
-        self.change_y -= GRAVIDADE * delta_time
-        self.center_y += self.change_y * delta_time
-
-        # troca direção
-
         if self.change_x > 0:
-            self.virado_esquerda = False
+            self.virado_para = "direita"
         elif self.change_x < 0:
-            self.virado_esquerda = True
+            self.virado_para = "esquerda"
 
-        # limites da tela
+        self.atualizar_textura()
 
-        if self.left < 0:
+    def receber_dano(self, duracao):
+        self.tempo_dano = duracao
+        self.atualizar_textura()
 
-            self.left = 0
-
-        if self.right > LARGURA:
-
-            self.right = LARGURA
-
-        if self.bottom < 0:
-
-            self.bottom = 0
-            self.change_y = 0
-            self.pode_pular = True
-
-        if self.top > ALTURA:
-
-            self.top = ALTURA
-            self.change_y = 0
-
-        if self.tempo_dano > 0:
-            quadro = 4 + int(self.tempo_animacao * 12) % 2
-        elif self.change_y > 0:
+    def atualizar_textura(self):
+        if self.change_y != 0:
             quadro = 3
-        elif self.change_x != 0:
-            quadro = 1 + int(self.tempo_animacao * 10) % 2
-        else:
+        elif self.tempo_dano > 0:
+            quadro = 4 + int(self.tempo_animacao * 12) % 2
+        elif self.change_x == 0:
             quadro = 0
+        else:
+            quadro = 1 + int(self.tempo_animacao / 0.1) % 2
 
-        if self.virado_esquerda:
+        if self.virado_para == "esquerda":
             quadro += 6
 
         self.set_texture(quadro)
+
+
+class Bloco(arcade.Sprite):
+
+    def __init__(self, largura, altura, center_x, center_y):
+        cor = arcade.color.PINK
+        textura = arcade.Texture(
+            Image.new("RGBA", (largura, altura), cor),
+            hash=f"bloco_{largura}_{altura}_{center_x}_{center_y}"
+        )
+        super().__init__(textura, center_x=center_x, center_y=center_y)
 
 
 # ==========================
@@ -186,15 +155,24 @@ class Inimigo(arcade.Sprite):
     def __init__(self):
 
         super().__init__(
-            "inimigo_png.png",
+            carregar_texturas_inimigo()[0],
             scale=0.08
         )
+        self.textures = carregar_texturas_inimigo()
+        self.virado_para = "direita"
 
         # velocidade aleatória
 
         self.change_x = random.choice([-3, 3])
 
         self.change_y = random.choice([-3, 3])
+        self.atualizar_direcao()
+
+    def atualizar_direcao(self):
+        direcao = "direita" if self.change_x >= 0 else "esquerda"
+        if direcao != self.virado_para:
+            self.virado_para = direcao
+            self.set_texture(0 if direcao == "direita" else 1)
 
     def update(self, delta_time):
 
@@ -204,47 +182,59 @@ class Inimigo(arcade.Sprite):
 
         # inverter ao bater nas paredes
 
-        if self.left <= 0 or self.right >= LARGURA:
+        if self.left < 0:
+            self.left = 0
+            self.change_x = abs(self.change_x)
+        elif self.right > LARGURA:
+            self.right = LARGURA
+            self.change_x = -abs(self.change_x)
+        self.atualizar_direcao()
 
-            self.change_x *= -1
-
-        if self.bottom <= 0 or self.top >= ALTURA:
-
-            self.change_y *= -1
+        if self.bottom < ALTURA_PISO:
+            self.bottom = ALTURA_PISO
+            self.change_y = abs(self.change_y)
+        elif self.top > ALTURA:
+            self.top = ALTURA
+            self.change_y = -abs(self.change_y)
 
 
 class InimigoSeguidor(Inimigo):
+
+    DISTANCIA_SEGURA = 180
 
     def __init__(self, jogador):
 
         super().__init__()
         self.jogador = jogador
-        self.velocidade = 110
+        self.velocidade = 180
 
     def update(self, delta_time):
 
-        if self.center_x < self.jogador.center_x:
-            self.center_x += self.velocidade * delta_time
-        elif self.center_x > self.jogador.center_x:
-            self.center_x -= self.velocidade * delta_time
+        distancia_x = self.jogador.center_x - self.center_x
+        if distancia_x > 0:
+            self.change_x = self.velocidade
+        elif distancia_x < 0:
+            self.change_x = -self.velocidade
+        else:
+            self.change_x = 0
 
-        self.center_x = max(self.width / 2, min(LARGURA - self.width / 2, self.center_x))
-        self.center_y = self.height / 2
+        limite_esquerdo = self.width / 2
+        limite_direito = LARGURA - self.width / 2
+        self.center_x += self.change_x * delta_time
+        self.center_x = max(limite_esquerdo, min(limite_direito, self.center_x))
+        self.atualizar_direcao()
+
+        self.bottom = ALTURA_PISO
 
 
 # ==========================
 # CLASSE JOGO
 # ==========================
 
-class JanelaJogo(arcade.Window):
+class JanelaJogo(arcade.View):
 
     def __init__(self):
-
-        super().__init__(
-            LARGURA,
-            ALTURA,
-            "Coletor de Castelos"
-        )
+        super().__init__()
 
         arcade.set_background_color(
             arcade.color.AMAZON
@@ -254,6 +244,8 @@ class JanelaJogo(arcade.Window):
         self.nome_digitado = ""
         self.nome_jogador = ""
         self.digitando_nome = False
+        self.tempo_partida_pendente = 0.0
+        self.tempo_tremor = 0.0
         self.ignorar_n_inicial = False
         self.pontuacao = 0
         self.fundo_jogo = arcade.SpriteList()
@@ -264,6 +256,11 @@ class JanelaJogo(arcade.Window):
         imagem_fundo.height = ALTURA
         self.fundo_jogo.append(imagem_fundo)
 
+    def on_show_view(self):
+        arcade.set_background_color(arcade.color.AMAZON)
+        self.camera_mundo = arcade.Camera2D(window=self.window)
+        self.camera_interface = arcade.Camera2D(window=self.window)
+
     # ==========================
     # INICIAR JOGO
     # ==========================
@@ -271,10 +268,14 @@ class JanelaJogo(arcade.Window):
     def iniciar_jogo(self):
 
         self.estado = "jogando"
+        self.digitando_nome = False
+        self.nome_digitado = ""
 
         self.tempo = TEMPO_LIMITE
+        self.tempo_tremor = 0.0
 
         self.castelos_coletados = 0
+        self.moeda_especial_coletada = False
         self.pontuacao = 0
         self.tempo_invulneravel = 0
 
@@ -284,7 +285,7 @@ class JanelaJogo(arcade.Window):
 
         self.jogador.center_x = LARGURA / 2
 
-        self.jogador.center_y = self.jogador.height / 2
+        self.jogador.center_y = 25 + self.jogador.height / 2
 
         self.lista_jogador = arcade.SpriteList()
 
@@ -293,15 +294,17 @@ class JanelaJogo(arcade.Window):
         )
 
         self.lista_blocos = arcade.SpriteList()
-        for x, y in ((160, 120), (400, 210), (640, 300), (400, 200), (160, 320)):
-            bloco = arcade.SpriteSolidColor(
-                width=130,
-                height=18,
-                center_x=x,
-                center_y=y,
-                color=arcade.color.PINK
-            )
-            self.lista_blocos.append(bloco)
+        for x in range(40, LARGURA, 80):
+            self.lista_blocos.append(Bloco(80, 30, x, 15))
+        for x, y in ((160, 150), (400, 230), (640, 310), (160, 390), (400, 470)):
+            self.lista_blocos.append(Bloco(130, 18, x, y))
+
+        self.physics_engine = arcade.PhysicsEnginePlatformer(
+            self.jogador,
+            platforms=self.lista_blocos,
+            gravity_constant=GRAVIDADE
+        )
+        self.physics_engine.update()
 
         # ==========================
         # CASTELOS
@@ -381,7 +384,7 @@ class JanelaJogo(arcade.Window):
                 )
 
                 if isinstance(inimigo, InimigoSeguidor):
-                    inimigo.center_y = inimigo.height / 2
+                    inimigo.bottom = ALTURA_PISO
                 else:
                     inimigo.center_y = random.randint(50, 550)
 
@@ -414,6 +417,8 @@ class JanelaJogo(arcade.Window):
     def on_draw(self):
 
         self.clear()
+        self.camera_interface.position = (LARGURA / 2, ALTURA / 2)
+        self.camera_interface.use()
 
         if self.estado == "menu":
             arcade.draw_text("COLETOR DE CASTELOS", 190, 450, arcade.color.WHITE, 34)
@@ -448,39 +453,27 @@ class JanelaJogo(arcade.Window):
             arcade.draw_text("M ou ESC: voltar ao menu", 260, 150, arcade.color.WHITE, 18)
             return
 
-        if self.estado == "Pontuacao":
-            arcade.draw_text("Pontuacao", 320, 520, arcade.color.YELLOW, 32)
-            resultados = list(
-                Pontuacao.select().order_by(
-                    Pontuacao.pontuacao.desc(),
-                    Pontuacao.tempo_finalizacao.asc()
-                ).limit(10)
-            )
-            if not resultados:
-                arcade.draw_text("Ainda não há pontuações.", 250, 430, arcade.color.WHITE, 20)
-            for posicao, resultado in enumerate(resultados, start=1):
-                arcade.draw_text(
-                    f"{posicao}. {resultado.nome} - {resultado.pontuacao} pontos | tempo {resultado.tempo_finalizacao}s",
-                    140,
-                    465 - posicao * 35,
-                    arcade.color.WHITE,
-                    18
-                )
-            arcade.draw_text("M: menu", 350, 70, arcade.color.WHITE, 18)
-            return
-
         if self.estado == "game_over":
             mensagem = "VOCÊ VENCEU!" if self.venceu else "GAME OVER"
             arcade.draw_text(mensagem, 260, 390, arcade.color.YELLOW, 36)
-            arcade.draw_text(
-                f"{self.nome_jogador}, sua pontuação: {self.pontuacao} pontos.",
-                170,
-                320,
-                arcade.color.WHITE,
-                20
-            )
-            arcade.draw_text("ENTER: jogar novamente     M: menu", 190, 230, arcade.color.WHITE, 18)
+            arcade.draw_text(f"Pontuação: {self.pontuacao} pontos", 270, 330, arcade.color.WHITE, 20)
+            if self.digitando_nome:
+                arcade.draw_text("Digite seu nome para registrar a pontuação", 170, 275, arcade.color.WHITE, 18)
+                arcade.draw_text(self.nome_digitado + "_", 300, 230, arcade.color.YELLOW, 24)
+                arcade.draw_text("ENTER: salvar   ESC: usar nome anterior", 215, 180, arcade.color.WHITE, 16)
+            else:
+                arcade.draw_text(f"Registrada para: {self.nome_jogador}", 260, 275, arcade.color.WHITE, 18)
+                arcade.draw_text("ENTER: jogar novamente   R: ranking   M: menu", 150, 210, arcade.color.WHITE, 18)
             return
+
+        intensidade_tremor = 8 * min(1, self.tempo_tremor / 0.3)
+        deslocamento_x = random.uniform(-intensidade_tremor, intensidade_tremor)
+        deslocamento_y = random.uniform(-intensidade_tremor, intensidade_tremor)
+        self.camera_mundo.position = (
+            LARGURA / 2 + deslocamento_x,
+            ALTURA / 2 + deslocamento_y
+        )
+        self.camera_mundo.use()
 
         self.fundo_jogo.draw()
 
@@ -494,12 +487,32 @@ class JanelaJogo(arcade.Window):
 
         self.lista_jogador.draw()
 
+        self.camera_interface.position = (LARGURA / 2, ALTURA / 2)
+        self.camera_interface.use()
+
+        if self.jogador.tempo_dano > 0:
+            intensidade_vermelha = int(125 * min(1, self.jogador.tempo_dano / 0.6))
+            arcade.draw_lrbt_rectangle_filled(
+                0,
+                LARGURA,
+                0,
+                ALTURA,
+                (255, 0, 0, intensidade_vermelha)
+            )
+
         arcade.draw_text(
             f"{self.nome_jogador} | Pontos: {self.pontuacao}",
             20,
             560,
             arcade.color.WHITE,
             20
+        )
+        arcade.draw_text(
+            f"Castelos: {self.castelos_coletados}/{TOTAL_CASTELOS} | Moeda especial: {'coletada' if self.moeda_especial_coletada else 'pendente'}",
+            20,
+            530,
+            arcade.color.WHITE,
+            16
         )
 
         # contador de tempo
@@ -521,12 +534,21 @@ class JanelaJogo(arcade.Window):
 
         self.venceu = venceu
         self.estado = "game_over"
-        tempo_gasto = TEMPO_LIMITE - max(0, int(self.tempo))
+        self.tempo_partida_pendente = TEMPO_LIMITE - max(0, self.tempo)
+        self.nome_digitado = ""
+        self.digitando_nome = True
+
+    def registrar_pontuacao(self):
+        if self.estado != "game_over" or not self.digitando_nome:
+            return
+
+        self.nome_jogador = self.nome_digitado.strip() or self.nome_jogador.strip() or "Jogador"
         Pontuacao.create(
-            nome=self.nome_jogador,
-            pontuacao=self.pontuacao,
-            tempo_finalizacao=tempo_gasto
+            nome_jogador=self.nome_jogador,
+            pontos=self.pontuacao,
+            tempo_partida=self.tempo_partida_pendente
         )
+        self.digitando_nome = False
 
     def teleportar_inimigo(self, inimigo):
 
@@ -535,12 +557,64 @@ class JanelaJogo(arcade.Window):
             if outro is not inimigo:
                 outros_inimigos.append(outro)
 
-        for _ in range(50):
-            inimigo.center_x = random.randint(50, LARGURA - 50)
+        distancia_segura = getattr(inimigo, "DISTANCIA_SEGURA", 180)
+        if isinstance(inimigo, InimigoSeguidor):
+            limite_esquerdo = inimigo.width / 2
+            limite_direito = LARGURA - inimigo.width / 2
+            distancia_teleporte = distancia_segura + 40
+            posicoes = {
+                max(limite_esquerdo, min(limite_direito, self.jogador.center_x - distancia_teleporte)),
+                max(limite_esquerdo, min(limite_direito, self.jogador.center_x + distancia_teleporte)),
+                limite_esquerdo,
+                limite_direito
+            }
+            posicoes = sorted(
+                (x for x in posicoes if abs(x - self.jogador.center_x) >= distancia_segura),
+                key=lambda x: abs(x - self.jogador.center_x),
+                reverse=True
+            )
+
+            for posicao_x in posicoes:
+                inimigo.center_x = posicao_x
+                inimigo.bottom = ALTURA_PISO
+                colisao_bloco = arcade.check_for_collision_with_list(
+                    inimigo,
+                    self.lista_blocos
+                )
+                colisao_outro_inimigo = arcade.check_for_collision_with_list(
+                    inimigo,
+                    outros_inimigos
+                )
+                if not colisao_bloco and not colisao_outro_inimigo:
+                    break
+
+            inimigo.change_x = (
+                inimigo.velocidade
+                if self.jogador.center_x > inimigo.center_x
+                else -inimigo.velocidade
+            )
+            inimigo.atualizar_direcao()
+            self.tempo_invulneravel = 1.5
+            return
+
+        for _ in range(100):
+            inimigo.center_x = random.uniform(
+                inimigo.width / 2,
+                LARGURA - inimigo.width / 2
+            )
             if isinstance(inimigo, InimigoSeguidor):
-                inimigo.center_y = inimigo.height / 2
+                inimigo.bottom = ALTURA_PISO
             else:
-                inimigo.center_y = random.randint(60, ALTURA - 50)
+                inimigo.center_y = random.uniform(
+                    inimigo.height / 2,
+                    ALTURA - inimigo.height / 2
+                )
+
+            distancia_x = inimigo.center_x - self.jogador.center_x
+            distancia_y = inimigo.center_y - self.jogador.center_y
+            esta_longe_do_jogador = (
+                distancia_x ** 2 + distancia_y ** 2 >= distancia_segura ** 2
+            )
 
             colisao_bloco = arcade.check_for_collision_with_list(
                 inimigo,
@@ -551,6 +625,8 @@ class JanelaJogo(arcade.Window):
                 outros_inimigos
             )
             if (
+                esta_longe_do_jogador
+                and
                 not arcade.check_for_collision(inimigo, self.jogador)
                 and not colisao_bloco
                 and not colisao_outro_inimigo
@@ -560,8 +636,15 @@ class JanelaJogo(arcade.Window):
         if not isinstance(inimigo, InimigoSeguidor):
             inimigo.change_x = random.choice([-3, 3])
             inimigo.change_y = random.choice([-3, 3])
+            inimigo.atualizar_direcao()
+        else:
+            inimigo.change_x = (
+                inimigo.velocidade
+                if self.jogador.center_x > inimigo.center_x
+                else -inimigo.velocidade
+            )
+            inimigo.atualizar_direcao()
 
-        self.jogador.tempo_dano = 0.5
         self.tempo_invulneravel = 1.5
 
     # ==========================
@@ -575,33 +658,24 @@ class JanelaJogo(arcade.Window):
             # diminui o tempo
 
             self.tempo -= delta_time
+            self.tempo_tremor = max(0, self.tempo_tremor - delta_time)
             self.tempo_invulneravel = max(0, self.tempo_invulneravel - delta_time)
 
-            # atualiza jogador
-
-            left_anterior = self.jogador.left
-            right_anterior = self.jogador.right
-            bottom_anterior = self.jogador.bottom
-            top_anterior = self.jogador.top
+            # A física move o jogador e resolve colisões com chão e plataformas.
+            self.physics_engine.update()
+            if self.jogador.top > ALTURA:
+                self.jogador.top = ALTURA
+                if self.jogador.change_y > 0:
+                    self.jogador.change_y = 0
             self.lista_jogador.update(delta_time)
 
-            blocos_colididos = arcade.check_for_collision_with_list(
-                self.jogador,
-                self.lista_blocos
-            )
-            for bloco in blocos_colididos:
-                if self.jogador.change_y < 0 and bottom_anterior >= bloco.top:
-                    self.jogador.bottom = bloco.top
-                    self.jogador.change_y = 0
-                    self.jogador.pode_pular = True
-                elif self.jogador.change_y > 0 and top_anterior <= bloco.bottom:
-                    self.jogador.top = bloco.bottom
-                    self.jogador.change_y = 0
-                elif self.jogador.change_x > 0 and right_anterior <= bloco.left:
-                    self.jogador.right = bloco.left
+            if self.jogador.left < 0:
+                self.jogador.left = 0
+                if self.jogador.change_x < 0:
                     self.jogador.change_x = 0
-                elif self.jogador.change_x < 0 and left_anterior >= bloco.right:
-                    self.jogador.left = bloco.right
+            elif self.jogador.right > LARGURA:
+                self.jogador.right = LARGURA
+                if self.jogador.change_x > 0:
                     self.jogador.change_x = 0
 
             # atualiza inimigos
@@ -614,6 +688,8 @@ class JanelaJogo(arcade.Window):
             )
             for moeda in moedas_coletadas:
                 self.pontuacao += moeda.valor
+                if moeda.valor >= 5:
+                    self.moeda_especial_coletada = True
                 moeda.remove_from_sprite_lists()
 
             # ==========================
@@ -643,6 +719,8 @@ class JanelaJogo(arcade.Window):
 
             if len(colisao_inimigo) > 0 and self.tempo_invulneravel <= 0:
                 self.pontuacao = max(0, self.pontuacao - 1)
+                self.jogador.receber_dano(0.6)
+                self.tempo_tremor = 0.3
                 inimigo_teleportado = next(
                     (
                         inimigo
@@ -657,7 +735,10 @@ class JanelaJogo(arcade.Window):
             # GANHOU
             # ==========================
 
-            if self.castelos_coletados == TOTAL_CASTELOS:
+            if (
+                self.castelos_coletados == TOTAL_CASTELOS
+                and self.moeda_especial_coletada
+            ):
 
                 self.finalizar_jogo(venceu=True)
 
@@ -699,7 +780,7 @@ class JanelaJogo(arcade.Window):
                     self.nome_jogador = "Jogador"
                 self.iniciar_jogo()
             elif symbol == arcade.key.R:
-                self.estado = "Pontuacao"
+                self.window.show_view(TelaRanking(self))
             elif symbol == arcade.key.I:
                 self.estado = "instrucoes"
             elif symbol == arcade.key.S:
@@ -711,14 +792,21 @@ class JanelaJogo(arcade.Window):
                 self.estado = "menu"
             return
 
-        if self.estado == "Pontuacao":
-            if symbol in (arcade.key.M, arcade.key.ESCAPE):
-                self.estado = "menu"
-            return
-
         if self.estado == "game_over":
+            if self.digitando_nome:
+                if symbol == arcade.key.BACKSPACE:
+                    self.nome_digitado = self.nome_digitado[:-1]
+                elif symbol == arcade.key.ENTER:
+                    self.registrar_pontuacao()
+                elif symbol == arcade.key.ESCAPE:
+                    self.nome_digitado = ""
+                    self.registrar_pontuacao()
+                return
+
             if symbol in (arcade.key.ENTER, arcade.key.J):
                 self.iniciar_jogo()
+            elif symbol == arcade.key.R:
+                self.window.show_view(TelaRanking(self))
             elif symbol in (arcade.key.M, arcade.key.ESCAPE):
                 self.nome_digitado = self.nome_jogador
                 self.estado = "menu"
@@ -737,9 +825,8 @@ class JanelaJogo(arcade.Window):
             self.jogador.change_x = -VELOCIDADE_JOGADOR
 
         elif symbol == arcade.key.UP:
-            if self.jogador.pode_pular:
+            if self.physics_engine.can_jump():
                 self.jogador.change_y = FORCA_PULO
-                self.jogador.pode_pular = False
 
     def on_key_release(self, symbol, modifiers):
 
@@ -755,8 +842,8 @@ class JanelaJogo(arcade.Window):
 
     def on_text(self, text):
 
-        if self.estado == "menu" and self.digitando_nome:
-            if self.ignorar_n_inicial:
+        if self.digitando_nome and self.estado in ("menu", "game_over"):
+            if self.estado == "menu" and self.ignorar_n_inicial:
                 self.ignorar_n_inicial = False
                 if text.lower() == "n":
                     return
@@ -769,17 +856,58 @@ class JanelaJogo(arcade.Window):
             self.nome_digitado = (self.nome_digitado + caracteres_validos)[:20]
 
 
+class TelaRanking(arcade.View):
+
+    def __init__(self, jogo):
+        super().__init__()
+        self.jogo = jogo
+        self.melhores = list(
+            Pontuacao.select().order_by(
+                Pontuacao.pontos.desc(),
+                Pontuacao.tempo_partida.asc()
+            ).limit(10)
+        )
+
+    def on_show_view(self):
+        arcade.set_background_color(arcade.color.AMAZON)
+
+    def on_draw(self):
+        self.clear()
+        arcade.draw_text("RANKING | TOP 10", 250, 520, arcade.color.YELLOW, 32)
+        if not self.melhores:
+            arcade.draw_text(
+                "Ainda não há pontuações registradas.",
+                205,
+                420,
+                arcade.color.WHITE,
+                20
+            )
+        for posicao, registro in enumerate(self.melhores, start=1):
+            arcade.draw_text(
+                f"{posicao:>2}. {registro}",
+                160,
+                465 - (posicao - 1) * 38,
+                arcade.color.WHITE,
+                18
+            )
+        arcade.draw_text("M ou ESC: voltar ao menu", 275, 45, arcade.color.WHITE, 16)
+
+    def on_key_press(self, symbol, modifiers):
+        if symbol in (arcade.key.M, arcade.key.ESCAPE):
+            self.jogo.estado = "menu"
+            self.window.show_view(self.jogo)
+
+
 # ==========================
 # MAIN
 # ==========================
 
 def main():
 
-    banco.connect(reuse_if_open=True)
-    banco.create_tables([Pontuacao], safe=True)
-    garantir_coluna_tempo_finalizacao()
+    inicializar_banco()
 
-    JanelaJogo()
+    janela = arcade.Window(LARGURA, ALTURA, "Coletor de Castelos")
+    janela.show_view(JanelaJogo())
 
     arcade.run()
 
